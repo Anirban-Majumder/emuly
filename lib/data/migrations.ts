@@ -304,4 +304,7 @@ export const MIGRATIONS = [
   `ALTER TABLE phones DROP COLUMN runner_secret;`,
   // The last human or agent action. Emuly stops a phone that has had none for its idle time.
   `ALTER TABLE phones ADD COLUMN last_activity_at TEXT;`,
+  // The /app/events stream reads max(id) for one user every 1.5 s. Without this index it scans all events.
+  // The index holds the rowid (id), so max(id) for one user reads one index entry.
+  `CREATE INDEX IF NOT EXISTS events_user ON events(user_id);`,
 ];

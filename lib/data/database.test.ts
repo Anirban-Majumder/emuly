@@ -50,6 +50,7 @@ test("migration 5 preserves saved allowances from v4 as explicit overrides", () 
     database.exec(`CREATE TABLE users (id INTEGER PRIMARY KEY);
       CREATE TABLE user_settings (user_id INTEGER PRIMARY KEY REFERENCES users(id), allowance_core_hours REAL NOT NULL DEFAULT 120);
       CREATE TABLE phones (id TEXT PRIMARY KEY, codespace_name TEXT NOT NULL, state TEXT NOT NULL, created_at TEXT NOT NULL, runner_secret BLOB);
+      CREATE TABLE events (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL);
       INSERT INTO users VALUES (1), (2);
       INSERT INTO user_settings VALUES (1, 120), (2, 200);
       PRAGMA user_version = 4;`);

@@ -22,14 +22,20 @@ export function createAccessTokenProvider({ database, encrypt = seal, decrypt = 
 }) {
   // Register before the first database await so callers share rotated refresh tokens.
   const refreshing = new Map<number, Promise<string>>();
-  async function resolve(userId: number, options: Options): Promise<string> {
+  async function readToken(userId: number) {
     const row = (await database.execute({ sql: `SELECT github_id, token_cipher, token_expires_at, refresh_cipher,
       refresh_expires_at FROM users WHERE id = ? AND blocked = 0`, args: [userId] })).rows[0] as unknown as TokenRow | undefined;
     if (!row) throw new Error("Sign in again");
+    return row;
+  }
+  function fresh(row: TokenRow, options: Options) {
     const clock = options.clock ?? Date.now;
-    if (row.token_expires_at && Date.parse(row.token_expires_at) > clock() + 5 * 60_000) {
-      return decrypt(row.token_cipher, contexts.githubAccess(row.github_id));
-    }
+    return Boolean(row.token_expires_at && Date.parse(row.token_expires_at) > clock() + 5 * 60_000);
+  }
+  async function resolve(userId: number, options: Options): Promise<string> {
+    const row = await readToken(userId);
+    const clock = options.clock ?? Date.now;
+    if (fresh(row, options)) return decrypt(row.token_cipher, contexts.githubAccess(row.github_id));
     try {
       if (!row.refresh_cipher || !row.refresh_expires_at
         || !(Date.parse(row.refresh_expires_at) > clock())) throw new Error("Refresh expired");
@@ -52,6 +58,12 @@ export function createAccessTokenProvider({ database, encrypt = seal, decrypt = 
   return async function accessToken(userId: number, options: Options = {}): Promise<string> {
     const pending = refreshing.get(userId);
     if (pending) return pending;
+    // Fast path: a valid token needs one read and no lease. Only a refresh rotates the
+    // refresh token, so only a refresh needs the lease (resolve reads the row again under it).
+    const row = await readToken(userId);
+    if (fresh(row, options)) return decrypt(row.token_cipher, contexts.githubAccess(row.github_id));
+    const again = refreshing.get(userId);
+    if (again) return again;
     const promise = withLease(database, `oauth:${userId}`, () => resolve(userId, options), 20_000);
     refreshing.set(userId, promise);
     try { return await promise; }

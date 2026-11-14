@@ -13,7 +13,7 @@ export async function GET(request: Request) {
       WHERE s.id = ? AND u.blocked = 0 AND s.expires_at > ?`, args: [session.id, new Date().toISOString()] })).rows.length;
     if (!valid) return undefined;
     const phones = await listPhones(session.userId);
-    const events = (await database.execute({ sql: "SELECT max(id) AS id, count(*) AS count FROM events WHERE user_id = ?", args: [session.userId] })).rows;
+    const events = (await database.execute({ sql: "SELECT max(id) AS id FROM events WHERE user_id = ?", args: [session.userId] })).rows;
     return { phones, events };
   });
 }
