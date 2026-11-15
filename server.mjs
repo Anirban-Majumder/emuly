@@ -33,4 +33,7 @@ attachPhoneStreams(server, (req, socket, head) => {
   if (nextUpgrades.listenerCount("upgrade") > 0) nextUpgrades.emit("upgrade", req, socket, head);
   else void upgradeHandler(req, socket, head);
 });
-server.listen(port, hostname, () => console.log(`emuly: http://${hostname}:${port}`));
+server.listen(port, hostname, () => {
+  if (process.env.EMULY_SELF_HOST === "1") console.log("emuly: self-host mode — sign-in is the gh credential store, no session cookies");
+  console.log(`emuly: http://${hostname}:${port}`);
+});

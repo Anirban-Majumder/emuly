@@ -9,6 +9,7 @@ import { createPhoneSetup } from "./phone-setup.ts";
 import { runnerRequest, closeRunner } from "./phone-runner.ts";
 import { syncError, type SyncError } from "../shared/sync-error.ts";
 import { CoordinationBusyError } from "../data/coordination.ts";
+import { SELF_HOST } from "../selfhost.ts";
 
 // Share mutation guards across requests and development hot reloads.
 // Hot reload keeps globalThis but runs this module again, so a service built by older code
@@ -79,7 +80,11 @@ export function templateRepository() {
  * started it. After a long setup that request can end before Android boots, and the result
  * is lost. So the boot runs in its own request, which answers at once and boots in waitUntil.
  */
-async function dispatchBoot(userId: number, id: string) {
+async function dispatchBoot(userId: number, id: string): Promise<void> {
+  // Self-host is a plain Node process with no request time limit, so boot directly here
+  // instead of the Vercel waitUntil round-trip through /api/internal/boot. The caller
+  // already backgrounds this and answers at once, mirroring the 202 behavior.
+  if (SELF_HOST) return phoneControl().bootNow(userId, id);
   const secret = process.env.CRON_SECRET;
   if (!process.env.VERCEL || !secret) throw new Error("Boot dispatch needs Vercel and CRON_SECRET");
   const base = (process.env.EMULY_BASE_URL ?? "").replace(/\/$/, "");
