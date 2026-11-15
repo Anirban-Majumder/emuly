@@ -23,7 +23,7 @@ export function phoneControl() {
     database: asyncDb(), github: createGitHubClient({ database: asyncDb(), accessToken: getAccessToken }), encrypt: seal,
     setup: createPhoneSetup({ token: userId => getAccessToken(userId) }),
     collectProgress: createPhoneSetup({ token: userId => getAccessToken(userId) }).collect,
-    runner: runnerRequest, disconnect: closeRunner, dispatchBoot,
+    runner: runnerRequest, disconnect: closeRunner, dispatchBoot: SELF_HOST ? undefined : dispatchBoot,
     maxPhones: process.env.EMULY_MAX_PHONES ? Number(process.env.EMULY_MAX_PHONES) : undefined,
   });
 }
@@ -81,10 +81,6 @@ export function templateRepository() {
  * is lost. So the boot runs in its own request, which answers at once and boots in waitUntil.
  */
 async function dispatchBoot(userId: number, id: string): Promise<void> {
-  // Self-host is a plain Node process with no request time limit, so boot directly here
-  // instead of the Vercel waitUntil round-trip through /api/internal/boot. The caller
-  // already backgrounds this and answers at once, mirroring the 202 behavior.
-  if (SELF_HOST) return phoneControl().bootNow(userId, id);
   const secret = process.env.CRON_SECRET;
   if (!process.env.VERCEL || !secret) throw new Error("Boot dispatch needs Vercel and CRON_SECRET");
   const base = (process.env.EMULY_BASE_URL ?? "").replace(/\/$/, "");

@@ -52,7 +52,15 @@ function report(error) {
   if (stderr) console.error(stderr);
 }
 
-/** Signed in and granted the codespace scope? `gh codespace list` fails without it. */
+/** Inspect granted OAuth scopes directly; API failures retain their real diagnostics. */
+async function hasCodespaceScope() {
+  const response = await probe("gh", ["api", "-i", "user"]);
+  const header = /^x-oauth-scopes:\s*(.*)$/im.exec(response);
+  if (!header) throw new Error("GitHub did not return X-OAuth-Scopes; cannot verify the codespace scope. Use `emuly login` with gh's OAuth credential store.");
+  return header[1].split(",").map(scope => scope.trim()).includes("codespace");
+}
+
+/** Check the credential store, then the actual OAuth scopes. */
 async function scopeReady() {
   try { await probe("gh", ["auth", "status"]); } catch {
     console.error("\nNo GitHub account in gh's credential store. Run:");
@@ -60,12 +68,13 @@ async function scopeReady() {
       : "gh auth login -h github.com -s codespace"}\n`);
     return false;
   }
-  try { await probe("gh", ["codespace", "list", "--limit", "1"]); }
-  catch (error) {
+  let ready;
+  try { ready = await hasCodespaceScope(); }
+  catch (error) { report(error); return false; }
+  if (!ready) {
     console.error("\nThe gh account is missing the codespace scope. Run:");
     console.error(`\n  ${inContainer() ? "docker compose run --rm emuly gh auth refresh -h github.com -s codespace"
       : "gh auth refresh -h github.com -s codespace"}\n`);
-    report(error);
     return false;
   }
   return true;
@@ -133,14 +142,13 @@ async function doctor() {
     .catch(() => fail(inContainer()
       ? "gh has no signed-in account. Run `docker compose run --rm emuly gh auth login -h github.com -s codespace`."
       : "gh has no signed-in account. Run `emuly login`."));
-  await probe("gh", ["codespace", "list", "--limit", "1"]).then(() => ok("the gh token has the codespace scope"))
-    .catch(error => {
-      fail(inContainer()
-        ? "the gh token lacks the codespace scope. Run `docker compose run --rm emuly gh auth refresh -h github.com -s codespace`."
-        : "the gh token lacks the codespace scope. Run `gh auth refresh -h github.com -s codespace`.");
-      report(error);
-    });
-  await probe("gh", ["api", "user", "--jq", ".login"]).then(login => ok(`GitHub identity: ${login}`))
+  await hasCodespaceScope().then(ready => {
+    if (ready) ok("the gh token has the codespace scope");
+    else fail(inContainer()
+      ? "the gh token lacks the codespace scope. Run `docker compose run --rm emuly gh auth refresh -h github.com -s codespace`."
+      : "the gh token lacks the codespace scope. Run `gh auth refresh -h github.com -s codespace`.");
+  }).catch(error => { fail("Could not verify GitHub scopes. Check the API error below."); report(error); });
+  await probe("gh", ["api", "user", "--jq", ".login"]).then(login => ok(`GitHub identity: ${login} (active account; switch with gh auth switch -h github.com)`))
     .catch(error => { fail("`gh api user` failed. Check connectivity."); report(error); });
   await probe("gh", ["auth", "token"]).then(() => ok("`gh auth token` returned a token"))
     .catch(() => fail(inContainer()

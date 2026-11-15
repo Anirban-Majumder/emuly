@@ -48,6 +48,21 @@ test("selfHostUser inserts on first call and updates the same row on the next", 
   } finally { await f.close(); }
 });
 
+test("selfHostUser shares concurrent initialization and performs no repeated writes", async () => {
+  const f = fixture();
+  try {
+    f.database.exec(`CREATE TABLE writes (n INTEGER); INSERT INTO writes VALUES (0);
+      CREATE TRIGGER user_writes AFTER UPDATE ON users BEGIN UPDATE writes SET n = n + 1; END;
+      CREATE TRIGGER session_writes AFTER UPDATE ON sessions BEGIN UPDATE writes SET n = n + 1; END;`);
+    const users = await Promise.all(Array.from({ length: 8 }, () => selfHostUser(f.client, { identity })));
+    await selfHostUser(f.client, { identity });
+    assert.ok(users.every(user => user.id === users[0].id));
+    assert.equal((f.database.prepare("SELECT n FROM writes").get() as { n: number }).n, 0);
+    await selfHostUser(f.client, { identity: { ...identity, login: "renamed" } });
+    assert.equal((f.database.prepare("SELECT n FROM writes").get() as { n: number }).n, 2);
+  } finally { await f.close(); }
+});
+
 test("selfHostUser derives initials from the name, or from the login when there is no name", async () => {
   const f = fixture();
   try {

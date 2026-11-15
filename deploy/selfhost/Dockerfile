@@ -13,7 +13,10 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 COPY . .
 # The prerendered pages open the database, so migrate before building.
-RUN pnpm db:migrate && pnpm build
+RUN pnpm db:migrate && pnpm build && rm -rf .next/cache
+# The custom stream server imports source modules outside Next tracing. Ship production
+# dependencies rather than standalone, which does not trace this custom entrypoint.
+RUN pnpm --filter emuly deploy --prod --legacy /runtime
 
 FROM node:26-bookworm-slim AS runtime
 WORKDIR /app
@@ -27,9 +30,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
   && curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_$(dpkg --print-architecture).deb" -o /tmp/gh.deb \
   && dpkg -i /tmp/gh.deb && rm /tmp/gh.deb \
   && apt-get purge -y curl && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
-COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /runtime/node_modules ./node_modules
 COPY --from=build /app/.next ./.next
-COPY package.json pnpm-lock.yaml next.config.ts tsconfig.json instrumentation.ts server.mjs emuly.mjs ./
+COPY package.json pnpm-lock.yaml next.config.ts tsconfig.json instrumentation.ts server.mjs emuly.mjs selfhost-guard.mjs ./
 # lib/ source must ship: the stream proxy dynamically imports ./phone-control.ts outside
 # the Next bundle, and the agent runbook reads content/ at request time.
 COPY lib ./lib

@@ -49,7 +49,18 @@ unauthenticated and must not be reachable from other machines.
 
 ## Option B: local, without Docker
 
-You need Node 26, pnpm and the gh CLI, signed in on this machine:
+You need Node 26, pnpm and the gh CLI, signed in on this machine.
+A default `gh auth login` grants `repo`, `read:org` and `gist`, **not `codespace`**.
+If you already use gh, grant the extra scope before starting:
+
+```sh
+gh auth refresh -h github.com -s codespace
+```
+
+Only gh's active account is used. Check it with `pnpm emuly doctor`, or switch
+with `gh auth switch -h github.com`.
+
+Then install and start:
 
 ```sh
 pnpm install
@@ -66,9 +77,24 @@ set. If it asks for a login or a scope repair, run the command it prints, or
 through the Dockerfile). Bundles such as the proxy may inline environment values
 at build time, so a runtime-only flag could leave self-host code compiled out.
 The Dockerfile sets it in both stages, so the compose path needs no extra env
-file. The local `--prod` path is different: `pnpm emuly up --prod` serves the
-last build, so build with the flag set (`EMULY_SELF_HOST=1 pnpm build`) —
+file. Builds and startup reject self-host on Vercel and production HTTPS base
+URLs other than localhost. The local `--prod` path is different:
+`pnpm emuly up --prod` serves the last build, so build with the flag set (`EMULY_SELF_HOST=1 pnpm build`) —
 `emuly up --prod` warns when the flag is not set in the environment.
+
+## Prebuilds and phone boot time
+
+Keep the default template (`codewarnab/emuly`, now public) for fast boots:
+Codespaces use its existing prebuild for `.devcontainer/phone/devcontainer.json`.
+No setup is needed.
+
+A fork selected with `EMULY_TEMPLATE_REPO` has no prebuild, so each new phone
+performs a full cold boot. In the fork, open **Settings → Codespaces → Set up
+prebuild**, choose the branch, `.devcontainer/phone/devcontainer.json`, and the
+regions you use. Prebuild storage is billed to the fork owner. Set
+`EMULY_TEMPLATE_REPOSITORY_ID` to the fork's matching repository ID and
+`EMULY_DEVCONTAINER_PATH=.devcontainer/phone/devcontainer.json`.
+Emulator and runner setup still runs after the Codespace becomes Available.
 
 ## Volumes and backups
 
@@ -119,7 +145,7 @@ manage (and delete) the surviving Codespaces directly in GitHub.
   use the host's address for a receiver on the host, and note the webhook
   policy requires public addresses (plain HTTP only for localhost, and only
   while Emuly itself runs on localhost). If a receiver flow genuinely needs a
-  public base URL for Emuly, set `EMULY_BASE_URL` in the compose environment —
+  base URL for Emuly, set `EMULY_BASE_URL` in the compose environment —
   there is a commented example in `deploy/selfhost/compose.yaml`. The API
   behind a public URL stays unauthenticated, so front it with your own auth.
 - **One user.** Every request resolves to the gh-signed-in account; agent keys
@@ -142,5 +168,5 @@ manage (and delete) the surviving Codespaces directly in GitHub.
   the database was carried over from hosted-style use and that account was
   blocked there. Unblock the user row (or reset the database volume) and start
   again.
-- The console stays empty or the identity looks wrong: the gh account changed
-  while the old user row exists; stop, and remove the database volume to re-seed.
+- The identity looks wrong: check gh's active account with `gh auth status` and
+  switch with `gh auth switch -h github.com`. Identity refresh can take five minutes.

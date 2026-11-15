@@ -16,8 +16,8 @@ export const getUser = cache(async () => {
   // Authorization header still uses the cookie.
   if (bearerValue(authorization)) return resolveUser({ authorization, session: null });
   // Self-host has no cookie: the single identity comes from gh, and the first call upserts it.
-  // connection() marks the request dynamic: selfHostUser stamps last_seen_at with the
-  // current time, an unstable value that must not run inside a prerender.
+  // connection() keeps gh identity lookup and first-use database initialization
+  // out of prerendering.
   if (SELF_HOST) { await connection(); return selfHostUser(await asyncDb()); }
   return resolveUser({ authorization, session: await getSession() });
 });

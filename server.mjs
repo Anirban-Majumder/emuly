@@ -1,4 +1,6 @@
-﻿// A single Node process is required: Next's HTTP routes issue one-use socket tickets.
+import { assertSelfHostEnvironment } from "./selfhost-guard.mjs";
+assertSelfHostEnvironment();
+// A single Node process is required: Next's HTTP routes issue one-use socket tickets.
 import next from "next";
 import { createServer } from "node:http";
 import { registerHooks } from "node:module";

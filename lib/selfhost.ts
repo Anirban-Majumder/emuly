@@ -73,6 +73,8 @@ async function selfHostIdentity(): Promise<GhIdentity> {
   return validateIdentity(JSON.parse(await cachedIdentity()));
 }
 
+const userCache = new WeakMap<Client, { key: string; pending: Promise<User> }>();
+
 /** Upsert the one self-host user from the gh identity, plus the constant "self-host"
     session row in the same transaction: the stream validators compare the sessions
     table, so that row must exist and point at this user. The token columns stay
@@ -80,7 +82,27 @@ async function selfHostIdentity(): Promise<GhIdentity> {
     gh's own store. */
 export async function selfHostUser(database: Client, options: { identity?: GhIdentity; now?: Date } = {}): Promise<User> {
   const identity = options.identity ?? await selfHostIdentity();
-  const now = (options.now ?? new Date()).toISOString();
+  const key = JSON.stringify(identity);
+  const cached = userCache.get(database);
+  if (cached?.key === key) {
+    const user = await cached.pending;
+    // Keep local account blocking effective without writing on polling requests.
+    const row = (await database.execute({ sql: "SELECT blocked FROM users WHERE id = ?", args: [user.id] })).rows[0];
+    if (!row || row.blocked) throw new Error("This GitHub account is blocked in the local Emuly database. Unblock it or reset the database (see docs/SELF-HOST.md).");
+    return user;
+  }
+  const pending = storeSelfHostUser(database, identity, options.now);
+  const entry = { key, pending };
+  userCache.set(database, entry);
+  try { return await pending; }
+  catch (error) {
+    if (userCache.get(database) === entry) userCache.delete(database);
+    throw error;
+  }
+}
+
+async function storeSelfHostUser(database: Client, identity: GhIdentity, date?: Date): Promise<User> {
+  const now = (date ?? new Date()).toISOString();
   const row = (await transaction(database, async queries => {
     const user = (await queries.execute({
       sql: `INSERT INTO users (github_id, login, name, avatar_url, token_cipher, token_scopes, created_at, last_seen_at)
