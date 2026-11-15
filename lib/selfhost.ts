@@ -1,10 +1,11 @@
 import "server-only";
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Client } from "@libsql/client";
 import { env } from "./env.ts";
+import { transaction } from "./data/async-database.ts";
 import type { User } from "./auth/identity.ts";
 
 /** Off by default, so every hosted path stays exactly as it is. Set EMULY_SELF_HOST=1
@@ -24,26 +25,33 @@ function exec(file: string, args: string[], timeoutMs: number): Promise<string> 
   });
 }
 
-/** Memoize a gh read for ttlMs, including a failed run, so one broken call cannot hammer gh. */
+/** Memoize a gh read for ttlMs, including a failed run, so one broken call cannot hammer gh.
+    Concurrent callers share the in-flight read instead of racing gh. */
 function memoize(run: Run, args: string[], ttlMs: number, clock: () => number): () => Promise<string> {
   let cache: { at: number } & ({ stdout: string } | { error: unknown }) | undefined;
-  return async () => {
+  let pending: Promise<string> | undefined;
+  return () => {
+    if (pending) return pending;
     if (cache && clock() - cache.at < ttlMs) {
-      if ("error" in cache) throw cache.error;
-      return cache.stdout;
+      if ("error" in cache) return Promise.reject(cache.error);
+      return Promise.resolve(cache.stdout);
     }
-    try { cache = { stdout: await run("gh", args), at: clock() }; return cache.stdout; }
-    catch (error) { cache = { error, at: clock() }; throw error; }
+    pending = run("gh", args).then(
+      stdout => { cache = { stdout, at: clock() }; return stdout; },
+      error => { cache = { error, at: clock() }; throw error; },
+    ).finally(() => { pending = undefined; });
+    return pending;
   };
 }
 
 /** gh >= 2.103 auto-refreshes an expiring token before printing it, so this needs no
-    refresh logic of our own and nothing token-shaped is stored in the database. */
+    refresh logic of our own and nothing token-shaped is stored in the database. The
+    timeout covers gh's cold-start network round-trips, not just the local exec. */
 export function createGhTokenSource(run: Run, { ttlMs = 60_000, clock = Date.now } = {}) {
   return memoize(run, ["auth", "token"], ttlMs, clock);
 }
 
-const ghToken = createGhTokenSource((file, args) => exec(file, args, 15_000));
+const ghToken = createGhTokenSource((file, args) => exec(file, args, 60_000));
 export { ghToken };
 
 export type GhIdentity = { login: string; id: number; name: string | null; avatarUrl: string | null };
@@ -65,19 +73,34 @@ async function selfHostIdentity(): Promise<GhIdentity> {
   return validateIdentity(JSON.parse(await cachedIdentity()));
 }
 
-/** Upsert the one self-host user from the gh identity. The token columns stay empty: in
-    self-host mode github-token.ts never reads them, the token lives in gh's own store. */
+/** Upsert the one self-host user from the gh identity, plus the constant "self-host"
+    session row in the same transaction: the stream validators compare the sessions
+    table, so that row must exist and point at this user. The token columns stay
+    empty: in self-host mode github-token.ts never reads them, the token lives in
+    gh's own store. */
 export async function selfHostUser(database: Client, options: { identity?: GhIdentity; now?: Date } = {}): Promise<User> {
   const identity = options.identity ?? await selfHostIdentity();
   const now = (options.now ?? new Date()).toISOString();
-  const row = (await database.execute({
-    sql: `INSERT INTO users (github_id, login, name, avatar_url, token_cipher, token_scopes, created_at, last_seen_at)
-      VALUES (?, ?, ?, ?, x'', '', ?, ?)
-      ON CONFLICT(github_id) DO UPDATE SET login = excluded.login, name = excluded.name,
-      avatar_url = excluded.avatar_url, last_seen_at = excluded.last_seen_at
-      RETURNING id, login, name, avatar_url`,
-    args: [identity.id, identity.login, identity.name, identity.avatarUrl, now, now],
-  })).rows[0] as unknown as { id: number; login: string; name: string | null; avatar_url: string | null } | undefined;
+  const row = (await transaction(database, async queries => {
+    const user = (await queries.execute({
+      sql: `INSERT INTO users (github_id, login, name, avatar_url, token_cipher, token_scopes, created_at, last_seen_at)
+        VALUES (?, ?, ?, ?, x'', '', ?, ?)
+        ON CONFLICT(github_id) DO UPDATE SET login = excluded.login, name = excluded.name,
+        avatar_url = excluded.avatar_url, last_seen_at = excluded.last_seen_at
+        RETURNING id, login, name, avatar_url, blocked`,
+      args: [identity.id, identity.login, identity.name, identity.avatarUrl, now, now],
+    })).rows[0] as unknown as { id: number; login: string; name: string | null; avatar_url: string | null; blocked: number } | undefined;
+    if (!user) return undefined;
+    if (user.blocked) {
+      throw new Error("This GitHub account is blocked in the local Emuly database. Unblock it or reset the database (see docs/SELF-HOST.md).");
+    }
+    await queries.execute({
+      sql: `INSERT INTO sessions (id, user_id, created_at, expires_at) VALUES ('self-host', ?, ?, '9999-12-31T23:59:59.999Z')
+        ON CONFLICT(id) DO UPDATE SET user_id = excluded.user_id, expires_at = excluded.expires_at`,
+      args: [user.id, now],
+    });
+    return user;
+  }));
   if (!row) throw new Error("Could not store the self-host user. Run `emuly doctor`.");
   // Same derivation as identity.ts loadUser, so the console renders both identically.
   const initials = (row.name?.trim().split(/\s+/).map(part => Array.from(part)[0]).slice(0, 2).join("")
@@ -86,15 +109,33 @@ export async function selfHostUser(database: Client, options: { identity?: GhIde
 }
 
 /** The AES key for sealing values at rest, kept in a file next to the database so self-host
-    needs no .env.local. Concurrent first boots may both write; the re-read after the write
+    needs no .env.local. Memoized per process so env.tokenKey does not re-read the file on
+    every seal/open. Concurrent first boots may both write; the re-read after the write
     makes the winner the key everyone uses. */
+let cachedTokenKey: string | undefined;
 export function selfHostTokenKey(): string {
+  if (cachedTokenKey !== undefined) return cachedTokenKey;
   const file = join(dirname(env.dbPath), "token.key");
+  let key = "";
   try {
-    const key = readFileSync(file, "utf8").trim();
-    if (key) return key;
+    key = readFileSync(file, "utf8").trim();
+    // Tighten a pre-existing file that some older run or copy created with wider mode.
+    if (key) chmodSync(file, 0o600);
   } catch { /* missing: create it below */ }
-  mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(file, `${randomBytes(32).toString("base64")}\n`, { mode: 0o600 });
-  return readFileSync(file, "utf8").trim();
+  if (!validKey(key)) {
+    // An empty or malformed file cannot decrypt anything, so regenerate: a broken
+    // write must not wedge the app. (Values sealed under the old file are lost either way.)
+    mkdirSync(dirname(file), { recursive: true });
+    key = randomBytes(32).toString("base64");
+    writeFileSync(file, `${key}\n`, { mode: 0o600 });
+  }
+  cachedTokenKey = key;
+  return key;
+}
+
+/** 32 bytes, base64-encoded exactly: the round-trip check rejects garbage Buffer.from would ignore. */
+function validKey(key: string): boolean {
+  if (key.length !== 44) return false;
+  const bytes = Buffer.from(key, "base64");
+  return bytes.length === 32 && bytes.toString("base64") === key;
 }

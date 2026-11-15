@@ -19,9 +19,9 @@ export async function createSession(userId: number) {
 
 export async function getSession() {
   await connection();
-  // Self-host has no session cookie. The constant id keeps stream tickets stable
-  // (they compare the session id, never the sessions table), and the user id
-  // points at the one gh identity. The expiry is a constant, not Date.now():
+  // Self-host has no session cookie. selfHostUser upserts the constant "self-host"
+  // row in the sessions table (the stream validators compare that table) and the user
+  // id points at the one gh identity. The expiry is a constant, not Date.now():
   // an unstable value would break prerendering of pages that only touch the session.
   if (SELF_HOST) {
     return { id: "self-host", userId: (await selfHostUser(asyncDb())).id, expiresAt: "9999-12-31T23:59:59.999Z" };

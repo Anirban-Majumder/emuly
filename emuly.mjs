@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // Emuly CLI: `emuly up|login|doctor`. Plain Node, no dependencies. Used on the host
 // (`pnpm emuly up`) and as the container command (`node emuly.mjs up --prod --no-browser`).
 // All interactive child output is inherited, so the user sees gh's device-flow code and the
@@ -71,12 +72,20 @@ async function up(args) {
   console.log("Running database migrations…");
   await quiet("node", ["--experimental-strip-types", "scripts/migrate-database.ts"]);
 
+  // The flag must also have been set when the bundle was built; middleware inlines it
+  // at build time, so serving a prod build made without it leaves self-host compiled out.
+  if (args.includes("--prod") && process.env.EMULY_SELF_HOST !== "1") {
+    console.warn("Warning: EMULY_SELF_HOST is not set in this shell. If this prod build was made without the flag, self-host code is compiled out; build with EMULY_SELF_HOST=1 pnpm build.");
+  }
+
   const url = `http://localhost:${process.env.PORT ?? 4321}`;
   console.log(`Starting emuly on ${url}\n`);
   if (!inContainer() && process.stdout.isTTY && !args.includes("--no-browser")) {
-    // Detached: the browser outlives a Ctrl-C of the server.
+    // Detached: the browser outlives a Ctrl-C of the server. Without an error listener a
+    // missing xdg-open becomes an uncaught exception; the URL is printed above anyway.
     const open = { linux: "xdg-open", darwin: "open", win32: "cmd" }[process.platform];
-    if (open) spawn(open, open === "cmd" ? ["/c", "start", "", url] : [url], { stdio: "ignore", detached: true }).unref();
+    if (open) spawn(open, open === "cmd" ? ["/c", "start", "", url] : [url], { stdio: "ignore", detached: true })
+      .on("error", () => {}).unref();
   }
 
   // A child that survives this process would keep the port, so forward both stop signals.
@@ -132,8 +141,10 @@ const usage = `Usage: emuly <command>
   login   Sign in to GitHub through gh's device flow (codespace scope)
   doctor  Check gh, the token, the scope and the database directory`;
 const [command, ...args] = process.argv.slice(2);
-if (!command || !{ up, login, doctor }[command] || args.includes("--help") || args.includes("-h")) {
+// Help is checked over command and args together, so `emuly --help` exits 0 too.
+const wantHelp = [command, ...args].some(a => a === "--help" || a === "-h");
+if (!command || !{ up, login, doctor }[command] || wantHelp) {
   console.log(usage);
-  process.exit(command && args.some(a => a === "--help" || a === "-h") ? 0 : 1);
+  process.exit(wantHelp ? 0 : 1);
 }
 await { up, login, doctor }[command](args).catch(error => { report(error); process.exitCode = 1; });

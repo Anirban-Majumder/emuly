@@ -1,10 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { randomBytes } from "node:crypto";
 import { createClient } from "./data/async-database.ts";
 import { openDatabase } from "./data/database.ts";
 import { createGhTokenSource, selfHostTokenKey, selfHostUser } from "./selfhost.ts";
@@ -57,7 +58,39 @@ test("selfHostUser derives initials from the name, or from the login when there 
   } finally { await f.close(); }
 });
 
-test("selfHostTokenKey reads or creates a 32-byte key file next to the database", async () => {
+test("selfHostUser upserts the constant 'self-host' session row the stream validators check", async () => {
+  const f = fixture();
+  try {
+    const first = await selfHostUser(f.client, { identity });
+    const row = f.database.prepare("SELECT id, user_id, expires_at FROM sessions").get() as
+      { id: string; user_id: number; expires_at: string };
+    assert.equal(row.id, "self-host");
+    assert.equal(row.user_id, first.id);
+    assert.equal(Date.parse(row.expires_at) > Date.now(), true);
+    // The events/actions streams validate exactly this shape: session id, blocked user,
+    // unexpired session, matching user id.
+    const valid = (await f.client.execute({ sql: `SELECT 1 FROM sessions s JOIN users u ON u.id = s.user_id
+      WHERE s.id = ? AND u.blocked = 0 AND s.expires_at > ? AND s.user_id = ?`,
+      args: [row.id, new Date().toISOString(), row.user_id] })).rows.length;
+    assert.equal(valid, 1);
+    // A re-upsert updates the row in place instead of duplicating or orphaning it.
+    const second = await selfHostUser(f.client, { identity: { ...identity, login: "new-name" } });
+    assert.equal((f.database.prepare("SELECT count(*) AS n FROM sessions").get() as { n: number }).n, 1);
+    assert.equal(row.user_id, second.id);
+  } finally { await f.close(); }
+});
+
+test("selfHostUser rejects a user blocked in the local database", async () => {
+  const f = fixture();
+  try {
+    await selfHostUser(f.client, { identity });
+    f.database.exec("UPDATE users SET blocked = 1");
+    await assert.rejects(selfHostUser(f.client, { identity }),
+      /blocked in the local Emuly database/);
+  } finally { await f.close(); }
+});
+
+test("selfHostTokenKey validates and memoizes the key, and repairs a bad file", async () => {
   const directory = mkdtempSync(join(tmpdir(), "emuly-selfhost-key-"));
   process.env.EMULY_DB = join(directory, "test.db");
   try {
@@ -66,12 +99,44 @@ test("selfHostTokenKey reads or creates a 32-byte key file next to the database"
     assert.equal(Buffer.from(first, "base64").length, 32);
     // 0600: the key seals GitHub tokens at rest in the same directory.
     assert.equal(statSync(file).mode & 0o777, 0o600);
-    assert.equal(selfHostTokenKey(), first, "the stored key is reused, not regenerated");
-    assert.equal(readFileSync(file, "utf8").trim(), first);
-    // An empty file is treated as missing so a broken write cannot wedge the app.
+    // Memoized per process: a changed file on disk must not re-key the running app.
+    writeFileSync(file, "not-a-key");
+    assert.equal(selfHostTokenKey(), first);
+    // A fresh process treats an empty or malformed file as missing and regenerates it.
     writeFileSync(file, "");
-    assert.notEqual(selfHostTokenKey(), first);
+    // The query string dodges the module cache: a second import acts like a new process.
+    const specifier = `./selfhost.ts?fresh-instance-${randomBytes(4).toString("hex")}`;
+    const fresh = (await import(specifier)) as typeof import("./selfhost.ts");
+    const second = fresh.selfHostTokenKey();
+    assert.notEqual(second, first);
+    assert.equal(Buffer.from(second, "base64").length, 32);
+    assert.equal(statSync(file).mode & 0o777, 0o600);
+    // A pre-existing valid file is kept, and its mode is tightened to 0600.
+    const manualKey = randomBytes(32).toString("base64");
+    writeFileSync(file, `${manualKey}\n`, { mode: 0o644 });
+    const keptSpecifier = `./selfhost.ts?kept-instance-${randomBytes(4).toString("hex")}`;
+    const kept = (await import(keptSpecifier)) as typeof import("./selfhost.ts");
+    assert.equal(kept.selfHostTokenKey(), manualKey);
+    assert.equal(statSync(file).mode & 0o777, 0o600);
   } finally { await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
+});
+
+test("createGhTokenSource shares one in-flight read between concurrent callers", async () => {
+  let time = 1_000;
+  const clock = () => time;
+  let calls = 0;
+  const run = async () => {
+    calls++;
+    await new Promise(resolve => setTimeout(resolve, 5));
+    return `token-${calls}`;
+  };
+  const source = createGhTokenSource(run, { ttlMs: 60_000, clock });
+  const results = await Promise.all([source(), source(), source()]);
+  assert.equal(calls, 1, "concurrent callers coalesce into a single gh run");
+  assert.deepEqual(results, ["token-1", "token-1", "token-1"]);
+  time += 60_001;
+  await source();
+  assert.equal(calls, 2);
 });
 
 test("createGhTokenSource caches hits and rejections within the TTL and refetches after it", async () => {

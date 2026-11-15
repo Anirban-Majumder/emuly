@@ -61,7 +61,9 @@ set. If it asks for a login or a scope repair, run the command it prints, or
 through the Dockerfile). Bundles such as the proxy may inline environment values
 at build time, so a runtime-only flag could leave self-host code compiled out.
 The Dockerfile sets it in both stages, so the compose path needs no extra env
-file.
+file. The local `--prod` path is different: `pnpm emuly up --prod` serves the
+last build, so build with the flag set (`EMULY_SELF_HOST=1 pnpm build`) —
+`emuly up --prod` warns when the flag is not set in the environment.
 
 ## Volumes and backups
 
@@ -70,19 +72,41 @@ file.
 | `emuly-data`  | `emuly.db` (SQLite) and the `token.key` file |
 | `emuly-gh`    | gh's credential store (the GitHub token)     |
 
-Both are ordinary Docker volumes. A backup is a copy: with the container stopped,
-`docker run --rm -v emuly-data:/data -v "$PWD:/backup" alpine tar czf /backup/emuly-data.tgz /data`.
+Both are ordinary Docker volumes. A backup of the data volume is a tarball made
+inside the running container, so the (project-prefixed) volume name does not
+matter:
+
+```sh
+docker compose exec emuly tar czf - -C /app/.data . > emuly-data.tgz
+```
+
+Restoring is the inverse, into the same path:
+
+```sh
+docker compose exec -T emuly tar xzf - -C /app/.data < emuly-data.tgz
+```
+
 The gh volume contains a live token — keep it private, or simply log in again
 after a restore instead of copying it.
 
-To start over, `docker compose down -v` removes both volumes. Your phones live in
-your GitHub codespaces and survive this; Emuly re-registers them on next start.
+To start over, `docker compose down -v` removes both volumes. Your phones live
+in your GitHub Codespaces and survive this — but Emuly does not re-register
+them on the next start: a fresh database has no record of them, and Emuly only
+manages the phones it has recorded. Either restore the backup from above, or
+manage (and delete) the surviving Codespaces directly in GitHub.
 
 ## Limitations
 
-- **Webhooks need a public URL.** Set `EMULY_BASE_URL` to an address GitHub's
-  webhooks can reach, and know that the API below it stays unauthenticated. If
-  you do not need webhooks, leave everything on loopback.
+- **Webhooks are outbound.** Emuly delivers webhook events itself to the
+  receiver URLs you register; GitHub never calls Emuly, so Emuly does not need
+  a public URL and stays on loopback. What must be reachable is each receiver,
+  from the container: inside Docker, `localhost` names the container itself, so
+  use the host's address for a receiver on the host, and note the webhook
+  policy requires public addresses (plain HTTP only for localhost, and only
+  while Emuly itself runs on localhost). If a receiver flow genuinely needs a
+  public base URL for Emuly, set `EMULY_BASE_URL` in the compose environment —
+  there is a commented example in `deploy/selfhost/compose.yaml`. The API
+  behind a public URL stays unauthenticated, so front it with your own auth.
 - **One user.** Every request resolves to the gh-signed-in account; agent keys
   you create still work, but there is no second account and no sign-up page.
 - **Unauthenticated API.** Anyone who can reach the port can drive your phones.
@@ -99,5 +123,9 @@ your GitHub codespaces and survive this; Emuly re-registers them on next start.
   scope, `gh auth token`, and a writable data directory.
 - A scope error from GitHub: run the `gh auth refresh -h github.com -s codespace`
   command from the table above.
+- A request reports the GitHub account is blocked in the local Emuly database:
+  the database was carried over from hosted-style use and that account was
+  blocked there. Unblock the user row (or reset the database volume) and start
+  again.
 - The console stays empty or the identity looks wrong: the gh account changed
   while the old user row exists; stop, and remove the database volume to re-seed.

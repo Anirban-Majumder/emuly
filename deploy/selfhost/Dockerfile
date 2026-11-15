@@ -34,6 +34,7 @@ COPY package.json pnpm-lock.yaml next.config.ts tsconfig.json instrumentation.ts
 # the Next bundle, and the agent runbook reads content/ at request time.
 COPY lib ./lib
 COPY content ./content
+COPY public ./public
 COPY phone ./phone
 COPY scripts/migrate-database.ts ./scripts/migrate-database.ts
 # Owned by the node user so the app can write the database and the token key there.
