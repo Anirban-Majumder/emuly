@@ -29,6 +29,7 @@ import { Pill } from "@/components/ui/pill";
 import { mockLog, mockDetail, mockPhones } from "@/lib/shared/fixtures";
 import { streamQuality } from "../../../../../lib/shared/display-settings";
 import { PhoneApps } from "@/components/phone/phone-apps";
+import { HostSpecs } from "@/components/phone/host-specs";
 import { AgentTasks } from "@/components/phone/agent-tasks";
 import { env } from "../../../../../lib/env";
 
@@ -180,9 +181,7 @@ async function StoredPhone({ phone, user, search, syncError }: {
           <LogFeed rows={tab === "log" ? events : []} live={false}
             running={tab === "log" ? `Current status: ${status.title}` : undefined} emptyMessage="No activity yet." />}
         </section>
-        <div className={s.subgrid}>
-          <Mini title="Host codespace" rows={[...machineRows(phone.machine, phone.cores), ["Idle stop", idleLabel(phone.idle_timeout_min)]]} />
-        </div>
+        <HostSpecs rows={[...machineRows(phone.machine, phone.cores), ["Idle stop", idleLabel(phone.idle_timeout_min)]]} />
         <p className={s.fineprint}><a href="https://docs.github.com/en/codespaces/setting-your-user-preferences/setting-your-timeout-period-for-github-codespaces" target="_blank" rel="noreferrer">GitHub timeout settings</a></p>
       </div>
     </main>
