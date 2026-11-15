@@ -72,18 +72,25 @@ last build, so build with the flag set (`EMULY_SELF_HOST=1 pnpm build`) —
 | `emuly-data`  | `emuly.db` (SQLite) and the `token.key` file |
 | `emuly-gh`    | gh's credential store (the GitHub token)     |
 
-Both are ordinary Docker volumes. A backup of the data volume is a tarball made
-inside the running container, so the (project-prefixed) volume name does not
-matter:
+Both are ordinary Docker volumes. A backup of the data volume is a tarball
+made with the app **stopped** — the database runs in WAL mode, so a tar of a
+live container can miss committed WAL contents, and a restore must never
+extract under a live connection. The one-off `run` container also keeps this
+volume-name-agnostic (the project-prefixed name never appears):
 
 ```sh
-docker compose exec emuly tar czf - -C /app/.data . > emuly-data.tgz
+docker compose stop emuly
+docker compose run --rm -T emuly tar czf - -C /app/.data . > emuly-data.tgz
+docker compose start emuly
 ```
 
-Restoring is the inverse, into the same path:
+Restoring is the inverse, into the same path, also with the app stopped
+(`-T` keeps compose from allocating a TTY, which would corrupt binary stdin):
 
 ```sh
-docker compose exec -T emuly tar xzf - -C /app/.data < emuly-data.tgz
+docker compose stop emuly
+docker compose run --rm -T emuly tar xzf - -C /app/.data < emuly-data.tgz
+docker compose start emuly
 ```
 
 The gh volume contains a live token — keep it private, or simply log in again

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -110,6 +110,15 @@ test("selfHostTokenKey validates and memoizes the key, and repairs a bad file", 
     const second = fresh.selfHostTokenKey();
     assert.notEqual(second, first);
     assert.equal(Buffer.from(second, "base64").length, 32);
+    assert.equal(statSync(file).mode & 0o777, 0o600);
+    // Regenerating into a wider-mode empty file must tighten the mode too: writeFileSync
+    // keeps an existing file's mode, so only the explicit chmod covers this case.
+    rmSync(file);
+    writeFileSync(file, "", { mode: 0o644 });
+    assert.equal(statSync(file).mode & 0o777, 0o644);
+    const emptySpecifier = `./selfhost.ts?empty-instance-${randomBytes(4).toString("hex")}`;
+    const empty = (await import(emptySpecifier)) as typeof import("./selfhost.ts");
+    empty.selfHostTokenKey();
     assert.equal(statSync(file).mode & 0o777, 0o600);
     // A pre-existing valid file is kept, and its mode is tightened to 0600.
     const manualKey = randomBytes(32).toString("base64");

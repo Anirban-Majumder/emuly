@@ -31,6 +31,17 @@ function spawnClose(file, args, stdio) {
 const probe = (file, args) => spawnClose(file, args, "ignore");
 const quiet = (file, args) => spawnClose(file, args, "inherit");
 
+/** gh >= 2.103 refreshes expiring tokens inside `gh auth token`; older gh hits expiry at
+    request time. gh < 2.103 still works on hosts that never issue expiring tokens, so warn. */
+async function ghVersionWarning() {
+  const version = await probe("gh", ["--version"]).catch(() => "");
+  const match = /(\d+)\.(\d+)\.\d+/.exec(version) ?? [];
+  const [major = 0, minor = 0] = match.slice(1).map(Number);
+  if (major < 2 || (major === 2 && minor < 103)) {
+    console.warn(`Warning: gh ${version.split("\n")[0] || "version unknown"} predates 2.103 and cannot refresh expiring tokens. Self-host relies on that; upgrade gh from https://cli.github.com.`);
+  }
+}
+
 
 /** gh's stderr says what actually went wrong; show it after our one-line hint. */
 function report(error) {
@@ -62,6 +73,7 @@ async function up(args) {
   await probe("gh", ["--version"]).catch(() => {
     throw new Error("The gh CLI is not installed. Install it from https://cli.github.com first.");
   });
+  await ghVersionWarning();
   // GH_TOKEN bypasses gh's store: `gh auth token` then returns a token that usually lacks
   // the codespace scope, and the login flow below would not repair it. Refuse to start.
   if (process.env.GH_TOKEN || process.env.GITHUB_TOKEN) {
@@ -109,8 +121,9 @@ async function doctor() {
   let failed = false;
   const fail = message => { console.error(`  ✗ ${message}`); failed = true; };
   const ok = message => console.log(`  ✓ ${message}`);
-  await probe("gh", ["--version"]).then(() => ok("gh is installed"))
+  await probe("gh", ["--version"]).then(out => ok(`gh is installed: ${out.split("\n")[0]}`))
     .catch(() => fail("gh is not installed. Install it from https://cli.github.com."));
+  await ghVersionWarning().catch(() => {});
   if (process.env.GH_TOKEN || process.env.GITHUB_TOKEN) {
     fail("GH_TOKEN/GITHUB_TOKEN is set. It bypasses gh's credential store, which is where Emuly's token lives.");
   }

@@ -119,9 +119,10 @@ export function selfHostTokenKey(): string {
   let key = "";
   try {
     key = readFileSync(file, "utf8").trim();
-    // Tighten a pre-existing file that some older run or copy created with wider mode.
-    if (key) chmodSync(file, 0o600);
-  } catch { /* missing: create it below */ }
+  } catch (error) {
+    // Only a missing file is expected; a real read failure must not be papered over.
+    if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
+  }
   if (!validKey(key)) {
     // An empty or malformed file cannot decrypt anything, so regenerate: a broken
     // write must not wedge the app. (Values sealed under the old file are lost either way.)
@@ -129,6 +130,9 @@ export function selfHostTokenKey(): string {
     key = randomBytes(32).toString("base64");
     writeFileSync(file, `${key}\n`, { mode: 0o600 });
   }
+  // Node ignores mode for existing files, so the chmod is unconditional: a pre-existing
+  // empty or malformed file may carry a wider mode that writeFileSync would keep.
+  chmodSync(file, 0o600);
   cachedTokenKey = key;
   return key;
 }
