@@ -1,0 +1,18 @@
+services:
+  emuly:
+    build:
+      context: ../..
+      dockerfile: deploy/selfhost/Dockerfile
+    # Loopback only: the self-host API is intentionally unauthenticated, so it must
+    # never be reachable from other machines.
+    ports:
+      - "127.0.0.1:4321:4321"
+    volumes:
+      # gh's credential store. Log in once, keep it across restarts.
+      - emuly-gh:/gh
+      # The SQLite database and the generated token key.
+      - emuly-data:/app/.data
+
+volumes:
+  emuly-gh:
+  emuly-data:
