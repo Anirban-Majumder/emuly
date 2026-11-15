@@ -37,6 +37,8 @@ async function ghVersionWarning() {
   const version = await probe("gh", ["--version"]).catch(() => "");
   const match = /(\d+)\.(\d+)\.\d+/.exec(version) ?? [];
   const [major = 0, minor = 0] = match.slice(1).map(Number);
+  // An empty probe means gh itself is missing; the caller reports that already.
+  if (!version) return;
   if (major < 2 || (major === 2 && minor < 103)) {
     console.warn(`Warning: gh ${version.split("\n")[0] || "version unknown"} predates 2.103 and cannot refresh expiring tokens. Self-host relies on that; upgrade gh from https://cli.github.com.`);
   }
@@ -128,13 +130,17 @@ async function doctor() {
     fail("GH_TOKEN/GITHUB_TOKEN is set. It bypasses gh's credential store, which is where Emuly's token lives.");
   }
   await probe("gh", ["auth", "status"]).then(() => ok("gh has a signed-in account"))
-    .catch(() => fail("gh has no signed-in account. Run `emuly login`."));
+    .catch(() => fail(inContainer()
+      ? "gh has no signed-in account. Run `docker compose run --rm emuly gh auth login -h github.com -s codespace`."
+      : "gh has no signed-in account. Run `emuly login`."));
   await probe("gh", ["codespace", "list", "--limit", "1"]).then(() => ok("the gh token has the codespace scope"))
     .catch(error => { fail("the gh token lacks the codespace scope. Run `gh auth refresh -h github.com -s codespace`."); report(error); });
   await probe("gh", ["api", "user", "--jq", ".login"]).then(login => ok(`GitHub identity: ${login}`))
     .catch(error => { fail("`gh api user` failed. Check connectivity."); report(error); });
   await probe("gh", ["auth", "token"]).then(() => ok("`gh auth token` returned a token"))
-    .catch(() => fail("`gh auth token` failed. Run `emuly login`."));
+    .catch(() => fail(inContainer()
+      ? "`gh auth token` failed. Run `docker compose run --rm emuly gh auth login -h github.com -s codespace`."
+      : "`gh auth token` failed. Run `emuly login`."));
   // The database can live elsewhere through EMULY_DB; check the directory that will hold it.
   const { mkdirSync, writeFileSync, rmSync } = await import("node:fs");
   const directory = (process.env.EMULY_DB || ".data/emuly.db").replace(/[^/\\]*$/, "") || ".";

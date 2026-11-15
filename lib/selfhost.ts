@@ -129,6 +129,9 @@ export function selfHostTokenKey(): string {
     mkdirSync(dirname(file), { recursive: true });
     key = randomBytes(32).toString("base64");
     writeFileSync(file, `${key}\n`, { mode: 0o600 });
+    // Concurrent first boots may both write; re-read so the winner's key is the one
+    // everyone uses and seals values that survive this process's restart.
+    key = readFileSync(file, "utf8").trim();
   }
   // Node ignores mode for existing files, so the chmod is unconditional: a pre-existing
   // empty or malformed file may carry a wider mode that writeFileSync would keep.

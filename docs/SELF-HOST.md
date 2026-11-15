@@ -27,6 +27,11 @@ docker compose run --rm emuly gh auth login -h github.com -s codespace
 docker compose up
 ```
 
+Log in before `docker compose up`: the container exits with login guidance
+until the credential store exists, and `restart: unless-stopped` then restarts
+it with backoff until you do. (Nothing is harmed by starting first — the app
+simply waits for the login above.)
+
 Then open `http://localhost:4321`. The login runs gh's device flow: GitHub shows a
 one-time code, you enter it in the browser, and the credential store is written to
 the `emuly-gh` volume — it survives restarts.
@@ -85,11 +90,14 @@ docker compose start emuly
 ```
 
 Restoring is the inverse, into the same path, also with the app stopped
-(`-T` keeps compose from allocating a TTY, which would corrupt binary stdin):
+(`-T` keeps compose from allocating a TTY, which would corrupt binary stdin).
+The restore **replaces** the data directory, so clear it first: tar only
+overlays, and a stale `emuly.db-wal` left behind would be replayed by SQLite
+over the restored database:
 
 ```sh
 docker compose stop emuly
-docker compose run --rm -T emuly tar xzf - -C /app/.data < emuly-data.tgz
+docker compose run --rm -T emuly sh -c 'find /app/.data -mindepth 1 -delete && tar xzf - -C /app/.data' < emuly-data.tgz
 docker compose start emuly
 ```
 

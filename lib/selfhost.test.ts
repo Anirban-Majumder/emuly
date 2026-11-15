@@ -120,8 +120,10 @@ test("selfHostTokenKey validates and memoizes the key, and repairs a bad file", 
     const empty = (await import(emptySpecifier)) as typeof import("./selfhost.ts");
     empty.selfHostTokenKey();
     assert.equal(statSync(file).mode & 0o777, 0o600);
-    // A pre-existing valid file is kept, and its mode is tightened to 0600.
+    // A pre-existing valid file is kept, and its mode is tightened to 0600. Recreate
+    // the file so the 0644 mode actually applies (writeFileSync keeps an existing mode).
     const manualKey = randomBytes(32).toString("base64");
+    rmSync(file);
     writeFileSync(file, `${manualKey}\n`, { mode: 0o644 });
     const keptSpecifier = `./selfhost.ts?kept-instance-${randomBytes(4).toString("hex")}`;
     const kept = (await import(keptSpecifier)) as typeof import("./selfhost.ts");
