@@ -1,0 +1,139 @@
+// Emuly CLI: `emuly up|login|doctor`. Plain Node, no dependencies. Used on the host
+// (`pnpm emuly up`) and as the container command (`node emuly.mjs up --prod --no-browser`).
+// All interactive child output is inherited, so the user sees gh's device-flow code and the
+// server log. Checks run with piped output so their stderr can be shown on failure.
+import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+
+// gh's device flow needs no OAuth App: the credential store (a named volume in a container)
+// holds the token, and `gh auth token` hands it to the app at request time.
+const LOGIN_ARGS = ["auth", "login", "-h", "github.com", "-s", "codespace"];
+const REFRESH_ARGS = ["auth", "refresh", "-h", "github.com", "-s", "codespace"];
+
+// Podman leaves /run/.containerenv, Docker leaves /.dockerenv. Both need the compose
+// wording, because running gh on the host would store the token outside the volume.
+const inContainer = () => existsSync("/.dockerenv") || existsSync("/run/.containerenv");
+
+function spawnClose(file, args, stdio) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(file, args, { stdio: stdio === "inherit" ? "inherit" : ["ignore", "pipe", "pipe"] });
+    let stdout = "", stderr = "";
+    if (child.stdout) child.stdout.on("data", chunk => { stdout += chunk; });
+    if (child.stderr) child.stderr.on("data", chunk => { stderr += chunk; });
+    child.on("error", reject);
+    child.on("close", code => code === 0 ? resolve(stdout.trim())
+      : reject(Object.assign(new Error(`${file} ${args[0]} failed`), { code, stderr })));
+  });
+}
+
+// Interactive commands (login, the server) show their output directly; probes stay quiet.
+const probe = (file, args) => spawnClose(file, args, "ignore");
+const quiet = (file, args) => spawnClose(file, args, "inherit");
+
+
+/** gh's stderr says what actually went wrong; show it after our one-line hint. */
+function report(error) {
+  console.error(error.message);
+  const stderr = (error.stderr ?? "").trim();
+  if (stderr) console.error(stderr);
+}
+
+/** Signed in and granted the codespace scope? `gh codespace list` fails without it. */
+async function scopeReady() {
+  try { await probe("gh", ["auth", "status"]); } catch {
+    console.error("\nNo GitHub account in gh's credential store. Run:");
+    console.error(`\n  ${inContainer() ? "docker compose run --rm emuly gh auth login -h github.com -s codespace"
+      : "gh auth login -h github.com -s codespace"}\n`);
+    return false;
+  }
+  try { await probe("gh", ["codespace", "list", "--limit", "1"]); }
+  catch (error) {
+    console.error("\nThe gh account is missing the codespace scope. Run:");
+    console.error(`\n  ${inContainer() ? "docker compose run --rm emuly gh auth refresh -h github.com -s codespace"
+      : "gh auth refresh -h github.com -s codespace"}\n`);
+    report(error);
+    return false;
+  }
+  return true;
+}
+
+async function up(args) {
+  await probe("gh", ["--version"]).catch(() => {
+    throw new Error("The gh CLI is not installed. Install it from https://cli.github.com first.");
+  });
+  // GH_TOKEN bypasses gh's store: `gh auth token` then returns a token that usually lacks
+  // the codespace scope, and the login flow below would not repair it. Refuse to start.
+  if (process.env.GH_TOKEN || process.env.GITHUB_TOKEN) {
+    throw new Error("GH_TOKEN/GITHUB_TOKEN is set. Unset it so Emuly uses gh's own credential store, which `emuly login` fills with the codespace scope.");
+  }
+  if (!await scopeReady()) { process.exitCode = 1; return; }
+
+  console.log("Running database migrations…");
+  await quiet("node", ["--experimental-strip-types", "scripts/migrate-database.ts"]);
+
+  const url = `http://localhost:${process.env.PORT ?? 4321}`;
+  console.log(`Starting emuly on ${url}\n`);
+  if (!inContainer() && process.stdout.isTTY && !args.includes("--no-browser")) {
+    // Detached: the browser outlives a Ctrl-C of the server.
+    const open = { linux: "xdg-open", darwin: "open", win32: "cmd" }[process.platform];
+    if (open) spawn(open, open === "cmd" ? ["/c", "start", "", url] : [url], { stdio: "ignore", detached: true }).unref();
+  }
+
+  // A child that survives this process would keep the port, so forward both stop signals.
+  const child = spawn("node", ["server.mjs", ...(args.includes("--prod") ? ["--production"] : [])],
+    { stdio: "inherit", env: { ...process.env, EMULY_SELF_HOST: "1" } });
+  for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => child.kill(signal));
+  child.on("close", code => process.exit(code ?? 1));
+}
+
+async function login() {
+  await probe("gh", ["--version"]).catch(() => {
+    throw new Error("The gh CLI is not installed. Install it from https://cli.github.com first.");
+  });
+  // Logged in but without the scope needs a refresh; a fresh store needs the full login.
+  // Inherited stdio shows the one-time device code and gh's prompts.
+  try { await probe("gh", ["auth", "status"]); await quiet("gh", REFRESH_ARGS); }
+  catch { await quiet("gh", LOGIN_ARGS); }
+}
+
+async function doctor() {
+  let failed = false;
+  const fail = message => { console.error(`  ✗ ${message}`); failed = true; };
+  const ok = message => console.log(`  ✓ ${message}`);
+  await probe("gh", ["--version"]).then(() => ok("gh is installed"))
+    .catch(() => fail("gh is not installed. Install it from https://cli.github.com."));
+  if (process.env.GH_TOKEN || process.env.GITHUB_TOKEN) {
+    fail("GH_TOKEN/GITHUB_TOKEN is set. It bypasses gh's credential store, which is where Emuly's token lives.");
+  }
+  await probe("gh", ["auth", "status"]).then(() => ok("gh has a signed-in account"))
+    .catch(() => fail("gh has no signed-in account. Run `emuly login`."));
+  await probe("gh", ["codespace", "list", "--limit", "1"]).then(() => ok("the gh token has the codespace scope"))
+    .catch(error => { fail("the gh token lacks the codespace scope. Run `gh auth refresh -h github.com -s codespace`."); report(error); });
+  await probe("gh", ["api", "user", "--jq", ".login"]).then(login => ok(`GitHub identity: ${login}`))
+    .catch(error => { fail("`gh api user` failed. Check connectivity."); report(error); });
+  await probe("gh", ["auth", "token"]).then(() => ok("`gh auth token` returned a token"))
+    .catch(() => fail("`gh auth token` failed. Run `emuly login`."));
+  // The database can live elsewhere through EMULY_DB; check the directory that will hold it.
+  const { mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+  const directory = (process.env.EMULY_DB || ".data/emuly.db").replace(/[^/\\]*$/, "") || ".";
+  try {
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(`${directory}.emuly-doctor-probe`, "1");
+    rmSync(`${directory}.emuly-doctor-probe`);
+    ok(`the database directory (${directory}) is writable`);
+  } catch { fail(`the database directory (${directory}) is not writable`); }
+  if (failed) { process.exitCode = 1; console.error("\nFix the ✗ items, then run `emuly up`."); }
+  else console.log("\nEverything checks out. Run `emuly up`.");
+}
+
+const usage = `Usage: emuly <command>
+
+  up      Check gh, migrate the database and start Emuly (--prod adds --production)
+  login   Sign in to GitHub through gh's device flow (codespace scope)
+  doctor  Check gh, the token, the scope and the database directory`;
+const [command, ...args] = process.argv.slice(2);
+if (!command || !{ up, login, doctor }[command] || args.includes("--help") || args.includes("-h")) {
+  console.log(usage);
+  process.exit(command && args.some(a => a === "--help" || a === "-h") ? 0 : 1);
+}
+await { up, login, doctor }[command](args).catch(error => { report(error); process.exitCode = 1; });
