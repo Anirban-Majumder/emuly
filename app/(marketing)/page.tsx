@@ -88,6 +88,7 @@ export default function LandingPage() {
           <details><summary>What happens when I stop it?</summary><p>Your codespace keeps the phone. Waking it boots Android fresh, which takes a few minutes. Only deleting the codespace erases it. GitHub deletes a stopped phone after its retention period. New phones get 30 days after the last stop. The console shows each phone&apos;s countdown.</p></details>
           <details><summary>Is it fast?</summary><p>Yes. Android runs with hardware acceleration (KVM) on the codespace machine. It is not slow software emulation, so apps open and respond quickly.</p></details>
           <details><summary>Limits?</summary><p>Running phones share your hours. GitHub decides how many codespaces you can have and run. GitHub stops an idle phone after 30 minutes or 4 hours, your choice. Cold boot takes about 2 minutes. Hours shown in the console are estimates.</p></details>
+          <details><summary>Can I host it myself?</summary><p>Yes. One Docker container runs the whole app on your machine, with your own GitHub account. Your agent does the setup from one prompt. You only sign in to GitHub. <Link href="/self-host">See how self-hosting works</Link>.</p></details>
         </div>
       </section>
     </main>
