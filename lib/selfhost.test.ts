@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -129,6 +129,15 @@ test("selfHostTokenKey validates and memoizes the key, and repairs a bad file", 
     const kept = (await import(keptSpecifier)) as typeof import("./selfhost.ts");
     assert.equal(kept.selfHostTokenKey(), manualKey);
     assert.equal(statSync(file).mode & 0o777, 0o600);
+    // A stale lock from a crashed process is stolen instead of blocking forever.
+    const lock = `${file}.lock`;
+    writeFileSync(lock, "", { mode: 0o600 });
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(lock, old, old);
+    const staleSpecifier = `./selfhost.ts?stale-instance-${randomBytes(4).toString("hex")}`;
+    const stale = (await import(staleSpecifier)) as typeof import("./selfhost.ts");
+    assert.equal(Buffer.from(stale.selfHostTokenKey(), "base64").length, 32);
+    assert.equal(existsSync(lock), false, "the lock is released after initialization");
   } finally { await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
 });
 

@@ -18,16 +18,21 @@ const { attachPhoneStreams } = await import("./lib/phone/phone-stream-proxy.mjs"
 const port = Number(process.env.PORT ?? 4321);
 const listenHostname = process.env.HOST ?? "127.0.0.1";
 // Self-host binds 0.0.0.0 for port mapping, but Next builds route request URLs from the
-// hostname given here — so it must be the trusted origin (EMULY_BASE_URL), or origin checks
-// reject every browser request from localhost while the listener works.
+// hostname AND port given here — so they must be the trusted origin (EMULY_BASE_URL),
+// or origin checks reject every browser request from the published address while the
+// listener works. A base URL without an explicit port gets its scheme's default.
 const selfHost = process.env.EMULY_SELF_HOST === "1";
-const nextHostname = selfHost ? new URL(process.env.EMULY_BASE_URL || `http://localhost:${port}`).hostname : listenHostname;
+const selfHostBase = selfHost ? new URL(process.env.EMULY_BASE_URL || `http://localhost:${port}`) : null;
+const nextHostname = selfHostBase ? selfHostBase.hostname : listenHostname;
+const nextPort = selfHostBase
+  ? Number(selfHostBase.port) || (selfHostBase.protocol === "https:" ? 443 : 80)
+  : port;
 // Next attaches its own "upgrade" listener to httpServer on the first request.
 // That listener ends phone stream sockets (it matches the page route) while our
 // proxy still opens the runner. Next listens on this private emitter instead,
 // and the proxy re-emits every other upgrade (HMR) on it.
 const nextUpgrades = new EventEmitter();
-const app = next({ dev: !process.argv.includes("--production"), hostname: nextHostname, port, httpServer: nextUpgrades });
+const app = next({ dev: !process.argv.includes("--production"), hostname: nextHostname, port: nextPort, httpServer: nextUpgrades });
 await app.prepare();
 const handle = app.getRequestHandler();
 const server = createServer((req, res) => handle(req, res));
@@ -40,5 +45,5 @@ attachPhoneStreams(server, (req, socket, head) => {
 });
 server.listen(port, listenHostname, () => {
   if (process.env.EMULY_SELF_HOST === "1") console.log("emuly: self-host mode — sign-in is the gh credential store, no session cookies");
-  console.log(`emuly: http://${nextHostname}:${port}`);
+  console.log(`emuly: http://${nextHostname}:${nextPort}`);
 });

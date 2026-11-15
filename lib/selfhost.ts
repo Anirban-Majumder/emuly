@@ -1,7 +1,7 @@
 import "server-only";
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Client } from "@libsql/client";
 import { env } from "./env.ts";
@@ -110,34 +110,60 @@ export async function selfHostUser(database: Client, options: { identity?: GhIde
 
 /** The AES key for sealing values at rest, kept in a file next to the database so self-host
     needs no .env.local. Memoized per process so env.tokenKey does not re-read the file on
-    every seal/open. Concurrent first boots may both write; the re-read after the write
-    makes the winner the key everyone uses. */
+    every seal/open. First boots are serialized with a lock file and the key is published
+    with an atomic rename: two processes starting together must converge on one key, and a
+    concurrent reader must never see a partially written one. */
 let cachedTokenKey: string | undefined;
 export function selfHostTokenKey(): string {
   if (cachedTokenKey !== undefined) return cachedTokenKey;
   const file = join(dirname(env.dbPath), "token.key");
-  let key = "";
-  try {
-    key = readFileSync(file, "utf8").trim();
-  } catch (error) {
-    // Only a missing file is expected; a real read failure must not be papered over.
-    if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
+  cachedTokenKey = withFileLock(`${file}.lock`, () => {
+    // Re-read under the lock: another process may have initialized or repaired the
+    // file while we waited, and its key is the one every sealed value must use.
+    let key = "";
+    try {
+      key = readFileSync(file, "utf8").trim();
+    } catch (error) {
+      // Only a missing file is expected; a real read failure must not be papered over.
+      if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
+    }
+    if (!validKey(key)) {
+      // An empty or malformed file cannot decrypt anything, so regenerate: a broken
+      // write must not wedge the app. (Values sealed under the old file are lost either way.)
+      mkdirSync(dirname(file), { recursive: true });
+      const temp = `${file}.${process.pid}.${randomBytes(4).toString("hex")}`;
+      writeFileSync(temp, `${randomBytes(32).toString("base64")}\n`, { mode: 0o600 });
+      renameSync(temp, file);
+      key = readFileSync(file, "utf8").trim();
+    }
+    // Node ignores mode for existing files, so the chmod is unconditional: a pre-existing
+    // empty or malformed file may carry a wider mode that writeFileSync would keep.
+    chmodSync(file, 0o600);
+    return key;
+  });
+  return cachedTokenKey;
+}
+
+/** Runs body while holding an exclusively created lock file, retrying until it is free.
+    A lock older than 10s belongs to a crashed process and is stolen. Sync sleep keeps
+    initialization ordered even though callers run before any async work. */
+function withFileLock<T>(lock: string, body: () => T): T {
+  const stealAfter = 10_000;
+  for (let waited = 0; ; waited += 50) {
+    try {
+      const fd = openSync(lock, "wx");
+      try { return body(); } finally { closeSync(fd); unlinkSync(lock); }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code !== "EEXIST") throw error;
+      let stole = false;
+      try {
+        if (Date.now() - statSync(lock).mtimeMs > stealAfter) { unlinkSync(lock); stole = true; }
+      } catch { /* released: retry */ }
+      if (stole) continue;
+      if (waited >= stealAfter) throw new Error(`timed out waiting for ${lock}; another Emuly process may be stuck`);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+    }
   }
-  if (!validKey(key)) {
-    // An empty or malformed file cannot decrypt anything, so regenerate: a broken
-    // write must not wedge the app. (Values sealed under the old file are lost either way.)
-    mkdirSync(dirname(file), { recursive: true });
-    key = randomBytes(32).toString("base64");
-    writeFileSync(file, `${key}\n`, { mode: 0o600 });
-    // Concurrent first boots may both write; re-read so the winner's key is the one
-    // everyone uses and seals values that survive this process's restart.
-    key = readFileSync(file, "utf8").trim();
-  }
-  // Node ignores mode for existing files, so the chmod is unconditional: a pre-existing
-  // empty or malformed file may carry a wider mode that writeFileSync would keep.
-  chmodSync(file, 0o600);
-  cachedTokenKey = key;
-  return key;
 }
 
 /** 32 bytes, base64-encoded exactly: the round-trip check rejects garbage Buffer.from would ignore. */

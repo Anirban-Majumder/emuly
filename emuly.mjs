@@ -134,7 +134,12 @@ async function doctor() {
       ? "gh has no signed-in account. Run `docker compose run --rm emuly gh auth login -h github.com -s codespace`."
       : "gh has no signed-in account. Run `emuly login`."));
   await probe("gh", ["codespace", "list", "--limit", "1"]).then(() => ok("the gh token has the codespace scope"))
-    .catch(error => { fail("the gh token lacks the codespace scope. Run `gh auth refresh -h github.com -s codespace`."); report(error); });
+    .catch(error => {
+      fail(inContainer()
+        ? "the gh token lacks the codespace scope. Run `docker compose run --rm emuly gh auth refresh -h github.com -s codespace`."
+        : "the gh token lacks the codespace scope. Run `gh auth refresh -h github.com -s codespace`.");
+      report(error);
+    });
   await probe("gh", ["api", "user", "--jq", ".login"]).then(login => ok(`GitHub identity: ${login}`))
     .catch(error => { fail("`gh api user` failed. Check connectivity."); report(error); });
   await probe("gh", ["auth", "token"]).then(() => ok("`gh auth token` returned a token"))

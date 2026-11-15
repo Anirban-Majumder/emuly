@@ -11,7 +11,8 @@ function need(name: string): string {
 export const env = {
   get baseUrl() {
     // Self-host runs on one loopback port, so the OAuth-only EMULY_BASE_URL can stay unset.
-    if (SELF_HOST && !process.env.EMULY_BASE_URL) return "http://localhost:4321";
+    // The default must track PORT, or a remapped port makes every origin check fail.
+    if (SELF_HOST && !process.env.EMULY_BASE_URL) return `http://localhost:${process.env.PORT ?? 4321}`;
     return need("EMULY_BASE_URL").replace(/\/$/, "");
   },
   get clientId() {
