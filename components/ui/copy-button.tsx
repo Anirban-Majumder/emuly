@@ -6,7 +6,7 @@ import { copyText, useToast } from "@/components/ui/ui-provider";
 
 const DEVICE_COPY_TOAST = "Prompt copied. Your agent will give you a sign-in link";
 
-async function freshPrompt() {
+export async function freshPrompt() {
   const response = await fetch("/v1/agent/setup-code", { method: "POST", cache: "no-store" });
   const body = await response.json().catch(() => ({}));
   if (response.status === 401) {
@@ -19,7 +19,7 @@ async function freshPrompt() {
 
 /** Starts the clipboard write inside the click, with the text as a promise. The browser then
     keeps the copy even if the user switches tabs while the prompt loads. */
-async function copyPending(text: Promise<string>) {
+export async function copyPending(text: Promise<string>) {
   if (typeof ClipboardItem === "undefined" || !navigator.clipboard?.write) return false;
   const blob = text.then(value => new Blob([value], { type: "text/plain" }));
   await navigator.clipboard.write([new ClipboardItem({ "text/plain": blob })]);
