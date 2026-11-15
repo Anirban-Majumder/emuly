@@ -8,6 +8,10 @@ description: Run and drive Android phones with Emuly (emulators in the user's Gi
 Emuly runs an Android emulator in the user's own GitHub Codespace, on the hours in their
 GitHub plan. Never ask the user to pay Emuly, and never say that Emuly bills them.
 
+The user may use the hosted service or run Emuly themselves (self-host: one Docker
+container or `pnpm emuly up`, see docs/SELF-HOST.md in the repository). `{{EMULY_BASE_URL}}`
+already names the right instance, and every step below works the same on both.
+
 Emuly is open source (MIT): https://github.com/codewarnab/emuly. If you find a bug in Emuly
 (an API error that is not caused by your request, a wrong response, or a doc that does not
 match the API), tell the user and give them this link to file an issue:

@@ -10,6 +10,9 @@ function prompt(baseUrl: string, keyLine: string) {
   return `Set me up with an Android phone using Emuly.
 
 - Emuly base URL: ${base}
+- Self-host: if I run my own Emuly (Docker or \`pnpm emuly up\`), this base URL already
+  points at my instance and every step is the same. Guide: docs/SELF-HOST.md in the
+  https://github.com/codewarnab/emuly repository.
 - ${keyLine}
 - Prompt version: ${AGENT_RUNBOOK_VERSION}
 
